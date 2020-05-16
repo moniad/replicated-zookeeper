@@ -35,8 +35,8 @@ public class Executor
                 Scanner in = new Scanner(System.in);
                 String s;
                 while (true) {
-                    System.out.println("==================================");
                     System.out.println("Type " + listingCommand + " to list all " + znode + "'s tree: ");
+                    System.out.println("==================================");
                     s = in.nextLine();
 
                     if (s.equals(listingCommand)) {
@@ -80,12 +80,13 @@ public class Executor
         }
     }
 
-    // part of ZooKeeper Java API
+    // part of Watcher interface and ZooKeeper Java API
     // forwards events such as state changes of the ZooKeeper connection or session to DataMonitor
     public void process(WatchedEvent event) {
         stateMonitor.process(event);
     }
 
+    @Override
     public void run() {
         try {
             synchronized (this) {
@@ -98,16 +99,19 @@ public class Executor
         }
     }
 
+    @Override
     public void closing(int rc) {
         synchronized (this) {
             notifyAll();
         }
     }
 
+    // when exists() completes on the server, the ZooKeeper API invokes callback in state monitor - processResult()
+    @Override
     public void exists() {
         try {
-            if (zooKeeper.exists(znode, true) == null) { // check if znode exists
-                if (child != null) {
+            if (zooKeeper.exists(znode, true) == null) { // then znode doesn't exist
+                if (child != null) { // shutting down executable
                     System.out.println("Killing process");
                     child.destroy();
                     try {
@@ -117,8 +121,8 @@ public class Executor
                     }
                     child = null;
                 }
-            } else {
-                new Thread(new Runnable() { // thread executing program passed as an arg
+            } else { // execute program passed as an arg
+                new Thread(new Runnable() {
                     @Override
                     public void run() {
                         System.out.println("Starting child");

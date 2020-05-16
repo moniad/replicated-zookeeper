@@ -14,6 +14,6 @@ Client can create and delete nodes and their children using:
 create /my_node Zadanie
 create /my_node/a
 create /my_node/a/ab
-delete /my_node
+deleteall /my_node
 
 ./zkServer2.sh stop

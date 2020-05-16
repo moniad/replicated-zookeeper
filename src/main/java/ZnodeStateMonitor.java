@@ -23,9 +23,11 @@ public class ZnodeStateMonitor implements Watcher, StatCallback {
         this.znode = znode;
         this.chainedWatcher = chainedWatcher;
         this.listener = listener;
-        // checking if the node exists
+        // checks if the node exists, sets a watch and passes a reference to itself (this)
+        // as the completion callback object
         zooKeeper.exists(znode, true, this, null);
-        System.out.println("Initial " + znode + "'s children state");
+
+        System.out.println("Initial " + znode + "'s children state:");
         int childrenCount = subscribeForEachZnodeChildEvent(znode);
         System.out.println(znode + " has " + childrenCount + (childrenCount == 1 ? " child." : " children."));
         System.out.println("==================================");
@@ -46,6 +48,7 @@ public class ZnodeStateMonitor implements Watcher, StatCallback {
         void closing(int rc);
     }
 
+    @Override
     public void process(WatchedEvent event) {
         String path = event.getPath();
         if (event.getType() == Event.EventType.None) { // The state of the connection has changed
@@ -66,13 +69,33 @@ public class ZnodeStateMonitor implements Watcher, StatCallback {
             System.out.println("==================================");
         } else {
             if (path != null && path.equals(znode)) {
-                // Something has changed on the specified node, let's find out
+                // find out what has changed on the specified node
                 zk.exists(znode, true, this, null);
             }
         }
         if (chainedWatcher != null) {
             chainedWatcher.process(event);
         }
+    }
+
+    // completion callback called on the client when zooKeeper.exists() completes
+    @Override
+    public void processResult(int rc, String path, Object ctx, Stat stat) {
+        switch (rc) {
+            case Code.Ok:
+            case Code.NoNode:
+                break;
+            case Code.SessionExpired:
+            case Code.NoAuth:
+                dead = true;
+                listener.closing(rc);
+                return;
+            default:
+                // Retry errors
+                zk.exists(znode, true, this, null);
+                return;
+        }
+        listener.exists();
     }
 
     public void printAllChildren(String znode) throws KeeperException, InterruptedException {
@@ -91,28 +114,10 @@ public class ZnodeStateMonitor implements Watcher, StatCallback {
                 childrenCount += subscribeForEachZnodeChildEvent(znode + '/' + child);
             }
         } catch (KeeperException e) {
-            System.out.println("Znode probably doesn't exist. Try to create it and run the program again.");
+            System.out.println("Znode probably doesn't exist. Try to create it!");
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
         return childrenCount;
-    }
-
-    public void processResult(int rc, String path, Object ctx, Stat stat) {
-        switch (rc) {
-            case Code.Ok:
-            case Code.NoNode:
-                break;
-            case Code.SessionExpired:
-            case Code.NoAuth:
-                dead = true;
-                listener.closing(rc);
-                return;
-            default:
-                // Retry errors
-                zk.exists(znode, true, this, null);
-                return;
-        }
-        listener.exists();
     }
 }

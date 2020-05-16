@@ -1,49 +1,43 @@
 /*
- * A simple class that monitors the data and existence of a ZooKeeper
- * node. It uses asynchronous ZooKeeper APIs.
+ * A simple class that monitors the existence of a ZooKeeper node. It uses asynchronous ZooKeeper APIs.
  */
 
-import java.util.Arrays;
-
+import org.apache.zookeeper.AsyncCallback.StatCallback;
 import org.apache.zookeeper.KeeperException;
+import org.apache.zookeeper.KeeperException.Code;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
-import org.apache.zookeeper.AsyncCallback.StatCallback;
-import org.apache.zookeeper.KeeperException.Code;
 import org.apache.zookeeper.data.Stat;
 
-public class DataMonitor implements Watcher, StatCallback {
+public class ZnodeStateMonitor implements Watcher, StatCallback {
     ZooKeeper zk;
     String znode;
     Watcher chainedWatcher;
     boolean dead;
-    DataMonitorListener listener;
-    byte[] prevData;
+    ZnodeStateChangeListener listener;
 
-    public DataMonitor(ZooKeeper zk, String znode, Watcher chainedWatcher,
-                       DataMonitorListener listener) {
-        this.zk = zk;
+    public ZnodeStateMonitor(ZooKeeper zooKeeper, String znode, Watcher chainedWatcher,
+                             ZnodeStateChangeListener listener) {
+        this.zk = zooKeeper;
         this.znode = znode;
         this.chainedWatcher = chainedWatcher;
         this.listener = listener;
-        // Get things started by checking if the node exists. We are going
-        // to be completely event driven
-        zk.exists(znode, true, this, null);
+        // checking if the node exists
+        zooKeeper.exists(znode, true, this, null);
         System.out.println("Initial " + znode + "'s children state");
         int childrenCount = subscribeForEachZnodeChildEvent(znode);
         System.out.println(znode + " has " + childrenCount + (childrenCount == 1 ? " child." : " children."));
         System.out.println("==================================");
     }
 
-    /**
-     * Other classes use the DataMonitor by implementing this method
-     */
-    public interface DataMonitorListener {
+    // custom interface used to communicate back to Executor
+    public interface ZnodeStateChangeListener {
         /**
          * The existence status of the node has changed.
          */
-        void exists(byte[] data);
+        void exists();
+
         /**
          * The ZooKeeper session is no longer valid.
          *
@@ -54,33 +48,25 @@ public class DataMonitor implements Watcher, StatCallback {
 
     public void process(WatchedEvent event) {
         String path = event.getPath();
-        if (event.getType() == Event.EventType.None) {
-            System.out.println("NONE");
-            // We are are being told that the state of the
-            // connection has changed
+        if (event.getType() == Event.EventType.None) { // The state of the connection has changed
             switch (event.getState()) {
-                case SyncConnected:
-                    // In this particular example we don't need to do anything
-                    // here - watches are automatically re-registered with
-                    // server and any watches triggered while the client was
-                    // disconnected will be delivered (in order of course)
+                case SyncConnected: // Watches are automatically re-registered with server and any watches triggered
+                    // while the client was disconnected will be delivered (in order of course)
                     break;
-                case Expired:
-                    // It's all over
+                case Expired: // session expired
                     dead = true;
                     listener.closing(KeeperException.Code.SessionExpired);
                     break;
             }
         } else if (event.getType() == Event.EventType.NodeChildrenChanged) {
+            System.out.println("==================================");
             System.out.println("Znode child's state changed. Printing all znode's children:");
             int childrenCount = subscribeForEachZnodeChildEvent(znode);
             System.out.println(znode + " has " + childrenCount + (childrenCount == 1 ? " child." : " children."));
             System.out.println("==================================");
         } else {
-//            System.out.println("OTHER EVENT");
             if (path != null && path.equals(znode)) {
-//                System.out.println("PATH IS ZNODE!");
-                // Something has changed on the node, let's find out
+                // Something has changed on the specified node, let's find out
                 zk.exists(znode, true, this, null);
             }
         }
@@ -113,13 +99,9 @@ public class DataMonitor implements Watcher, StatCallback {
     }
 
     public void processResult(int rc, String path, Object ctx, Stat stat) {
-        boolean exists;
         switch (rc) {
             case Code.Ok:
-                exists = true;
-                break;
             case Code.NoNode:
-                exists = false;
                 break;
             case Code.SessionExpired:
             case Code.NoAuth:
@@ -131,23 +113,6 @@ public class DataMonitor implements Watcher, StatCallback {
                 zk.exists(znode, true, this, null);
                 return;
         }
-
-        byte[] b = null;
-        if (exists) {
-            try {
-                b = zk.getData(znode, false, null);
-            } catch (KeeperException e) {
-                // We don't need to worry about recovering now. The watch
-                // callbacks will kick off any exception handling
-                e.printStackTrace();
-            } catch (InterruptedException e) {
-                return;
-            }
-        }
-        if ((b == null && b != prevData)
-                || (b != null && !Arrays.equals(prevData, b))) {
-            listener.exists(b);
-            prevData = b;
-        }
+        listener.exists();
     }
 }

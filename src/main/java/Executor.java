@@ -1,10 +1,8 @@
-/**
- * A simple example program to use DataMonitor to start and
- * stop executables based on a znode. The program watches the
- * specified znode and saves the data that corresponds to the
- * znode in the filesystem. It also starts the specified program
- * with the specified arguments when the znode exists and kills
- * the program if the znode goes away.
+/*
+ * A simple example program to use DataMonitor to start and stop executables based on a znode. The program watches
+ * the specified znode and its children and prints this znode's children on their state change.
+ * It also allows to print current znode's tree state. It also starts the specified program
+ * with the specified arguments when the znode exists and kills the program if the znode goes away.
  */
 
 import org.apache.zookeeper.KeeperException;
@@ -13,23 +11,23 @@ import org.apache.zookeeper.Watcher;
 import org.apache.zookeeper.ZooKeeper;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.util.Scanner;
 
 public class Executor
-        implements Watcher, Runnable, DataMonitor.DataMonitorListener {
+        implements Watcher, Runnable, ZnodeStateMonitor.ZnodeStateChangeListener {
     String znode;
-    DataMonitor dm;
-    ZooKeeper zk;
+    ZnodeStateMonitor stateMonitor;
+    ZooKeeper zooKeeper;
     String exec;
     Process child;
 
-    public Executor(String hostPort, final String znode, String exec) throws IOException {
+    public Executor(String hostIp, final String znode, String exec) throws IOException {
         this.exec = exec;
         this.znode = znode;
-        zk = new ZooKeeper(hostPort, 3000, this);
-        dm = new DataMonitor(zk, znode, null, this);
+        zooKeeper = new ZooKeeper(hostIp, 40000, this);
+        stateMonitor = new ZnodeStateMonitor(zooKeeper, znode, null, this);
+
+        // thread listing tree
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -43,9 +41,9 @@ public class Executor
 
                     if (s.equals(listingCommand)) {
                         try {
-                            if (zk.exists(znode, true) != null) {
+                            if (zooKeeper.exists(znode, true) != null) {
                                 System.out.println(znode);
-                                dm.printAllChildren(znode);
+                                stateMonitor.printAllChildren(znode);
                             } else {
                                 System.out.println(znode + " has no children.");
                             }
@@ -62,18 +60,19 @@ public class Executor
         }).start();
     }
 
-    /**
-     * @param args
-     */
     public static void main(String[] args) {
+        runApp(args);
+    }
+
+    private static void runApp(String[] args) {
         if (args.length < 3) {
-            System.err
-                    .println("USAGE: Executor hostPort znode filename program [args ...]");
+            System.err.println("USAGE: Executor hostPort znode filename program [args ...]");
             System.exit(2);
         }
         String hostPort = args[0];
         String znode = args[1];
         String exec = args[2];
+
         try {
             new Executor(hostPort, znode, exec).run();
         } catch (Exception e) {
@@ -81,23 +80,21 @@ public class Executor
         }
     }
 
-    /***************************************************************************
-     * We do process any events ourselves, we just need to forward them on.
-     *
-     * @see org.apache.zookeeper.Watcher#process(org.apache.zookeeper.proto.WatcherEvent)
-     */
+    // part of ZooKeeper Java API
+    // forwards events such as state changes of the ZooKeeper connection or session to DataMonitor
     public void process(WatchedEvent event) {
-        dm.process(event);
+        stateMonitor.process(event);
     }
 
     public void run() {
         try {
             synchronized (this) {
-                while (!dm.dead) {
+                while (!stateMonitor.dead) {
                     wait();
                 }
             }
         } catch (InterruptedException e) {
+            System.err.println(e.getMessage());
         }
     }
 
@@ -107,66 +104,38 @@ public class Executor
         }
     }
 
-    static class StreamWriter extends Thread {
-        OutputStream os;
-
-        InputStream is;
-
-        StreamWriter(InputStream is, OutputStream os) {
-            this.is = is;
-            this.os = os;
-            start();
-        }
-
-        public void run() {
-            byte[] b = new byte[80];
-            int rc;
-            try {
-                while ((rc = is.read(b)) > 0) {
-                    os.write(b, 0, rc);
-                }
-            } catch (IOException e) {
-            }
-
-        }
-    }
-
-    public void exists(byte[] data) {
-        if (data == null) {
-            if (child != null) {
-                System.out.println("Killing process");
-                child.destroy();
-                try {
-                    child.waitFor();
-                } catch (InterruptedException e) {
-                }
-            }
-            child = null;
-        } else {
-            if (child != null) {
-                System.out.println("Stopping child");
-                child.destroy();
-                try {
-                    child.waitFor();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-
-            System.out.println("Starting child");
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
+    public void exists() {
+        try {
+            if (zooKeeper.exists(znode, true) == null) { // check if znode exists
+                if (child != null) {
+                    System.out.println("Killing process");
+                    child.destroy();
                     try {
-                        child = Runtime.getRuntime().exec(exec);
-                        dm.subscribeForEachZnodeChildEvent(znode);
-                    } catch (IOException e) {
-                        e.printStackTrace();
+                        child.waitFor();
+                    } catch (InterruptedException e) {
+                        System.err.println(e.getMessage());
                     }
-                    new StreamWriter(child.getInputStream(), System.out);
-                    new StreamWriter(child.getErrorStream(), System.err);
+                    child = null;
                 }
-            }).start();
+            } else {
+                new Thread(new Runnable() { // thread executing program passed as an arg
+                    @Override
+                    public void run() {
+                        System.out.println("Starting child");
+                        try {
+                            child = Runtime.getRuntime().exec(exec);
+                            stateMonitor.subscribeForEachZnodeChildEvent(znode);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                        }
+                        new StreamWriter(child.getInputStream(), System.out);
+                        new StreamWriter(child.getErrorStream(), System.err);
+                    }
+                }).start();
+            }
+        } catch (KeeperException |
+                InterruptedException e) {
+            e.printStackTrace();
         }
     }
 }

@@ -1,10 +1,3 @@
-/*
- * A simple example program to use DataMonitor to start and stop executables based on a znode. The program watches
- * the specified znode and its children and prints this znode's children on their state change.
- * It also allows to print current znode's tree state. It also starts the specified program
- * with the specified arguments when the znode exists and kills the program if the znode goes away.
- */
-
 import org.apache.zookeeper.KeeperException;
 import org.apache.zookeeper.WatchedEvent;
 import org.apache.zookeeper.Watcher;
